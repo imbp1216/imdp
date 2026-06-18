@@ -626,8 +626,8 @@
      Supabase 클라우드 동기화 (이메일 로그인) — 단일 파일, SDK 없이 REST만 사용
      ▼▼▼ 아래 두 값만 채우면 클라우드+로그인이 켜집니다. 비워두면 로컬 전용으로 동작합니다.
      anon(public) 키는 RLS와 함께 쓰도록 만들어진 공개 키라 페이지에 넣어도 안전합니다. ▼▼▼ */
-  var SUPABASE_URL = '';        /* 예: 'https://abcd1234.supabase.co' */
-  var SUPABASE_ANON_KEY = '';   /* Supabase → Project Settings → API → Project API keys의 anon public */
+  var SUPABASE_URL = 'https://heidqrbgmekdrexzzjme.supabase.co';        /* 예: 'https://abcd1234.supabase.co' */
+  var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlaWRxcmJnbWVrZHJleHp6am1lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3ODM1OTAsImV4cCI6MjA5NzM1OTU5MH0.rzNuvbe_Dm48EW-Enc0EobWdxfL7f3T-DhgA-BsBpHs';   /* Supabase → Project Settings → API → Project API keys의 anon public */
   /* ▲▲▲ 여기까지 ▲▲▲ */
 
   var cloud = { on: !!(SUPABASE_URL && SUPABASE_ANON_KEY), token:null, refresh:null, userId:null, email:null };
