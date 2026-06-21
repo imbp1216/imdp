@@ -636,7 +636,7 @@
   var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlaWRxcmJnbWVrZHJleHp6am1lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3ODM1OTAsImV4cCI6MjA5NzM1OTU5MH0.rzNuvbe_Dm48EW-Enc0EobWdxfL7f3T-DhgA-BsBpHs';   /* Supabase → Project Settings → API → Project API keys의 anon public */
   /* ▲▲▲ 여기까지 ▲▲▲ */
 
-  var cloud = { on: !!(SUPABASE_URL && SUPABASE_ANON_KEY), token:null, refresh:null, userId:null, email:null };
+  var cloud = { on: !!(SUPABASE_URL && SUPABASE_ANON_KEY), token:null, refresh:null, userId:null, email:null, expiresAt:0, sessionDead:false };
   var SESSION_KEY = 'md-supa-session-v1';
   var cloudTimer = null;
 
@@ -645,18 +645,49 @@
     if(auth && cloud.token) h['Authorization'] = 'Bearer ' + cloud.token;
     return h;
   }
-  function saveSession(){ try{ storage.set(SESSION_KEY, JSON.stringify({ token:cloud.token, refresh:cloud.refresh, userId:cloud.userId, email:cloud.email })); }catch(e){} }
+  function saveSession(){ try{ storage.set(SESSION_KEY, JSON.stringify({ token:cloud.token, refresh:cloud.refresh, userId:cloud.userId, email:cloud.email, expiresAt:cloud.expiresAt })); }catch(e){} }
   function clearSessionStore(){ try{ storage.set(SESSION_KEY, ''); }catch(e){} }
   function restoreSession(){
-    try{ var s = JSON.parse(storage.get(SESSION_KEY) || 'null'); if(s && s.token && s.userId){ cloud.token=s.token; cloud.refresh=s.refresh; cloud.userId=s.userId; cloud.email=s.email; return true; } }catch(e){}
+    try{ var s = JSON.parse(storage.get(SESSION_KEY) || 'null'); if(s && s.token && s.userId){ cloud.token=s.token; cloud.refresh=s.refresh; cloud.userId=s.userId; cloud.email=s.email; cloud.expiresAt=s.expiresAt||0; return true; } }catch(e){}
     return false;
   }
   function applyAuthResult(j){
-    cloud.token = j.access_token || null;
-    cloud.refresh = j.refresh_token || null;
-    cloud.userId = (j.user && j.user.id) || j.id || null;
-    cloud.email = (j.user && j.user.email) || null;
+    if(j.access_token) cloud.token = j.access_token;
+    if(j.refresh_token) cloud.refresh = j.refresh_token;
+    if(j.user && j.user.id) cloud.userId = j.user.id; else if(j.id) cloud.userId = j.id;
+    if(j.user && j.user.email) cloud.email = j.user.email;
+    cloud.expiresAt = j.expires_at ? (j.expires_at * 1000) : (Date.now() + ((j.expires_in || 3600) * 1000));
+    cloud.sessionDead = false;
     saveSession();
+  }
+  var refreshing = null;
+  function supaRefresh(){
+    if(!cloud.refresh) return Promise.resolve(false);
+    if(refreshing) return refreshing;
+    refreshing = fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', {
+      method:'POST', headers:supaHeaders(false), body:JSON.stringify({ refresh_token: cloud.refresh })
+    }).then(function(r){
+      if(r.status === 400 || r.status === 401){ cloud.sessionDead = true; return false; }
+      if(!r.ok) return false;
+      return r.json().then(function(j){ if(j && j.access_token){ applyAuthResult(j); return true; } return false; }, function(){ return false; });
+    }).catch(function(){ return false; }).then(function(ok){ refreshing = null; return ok; });
+    return refreshing;
+  }
+  function supaReq(method, path, body, isUpsert){
+    function attempt(){
+      var h = supaHeaders(true);
+      if(isUpsert) h['Prefer'] = 'resolution=merge-duplicates,return=minimal';
+      var opts = { method:method, headers:h };
+      if(body !== undefined) opts.body = JSON.stringify(body);
+      return fetch(SUPABASE_URL + path, opts);
+    }
+    var pre = (cloud.expiresAt && cloud.refresh && Date.now() > cloud.expiresAt - 60000) ? supaRefresh() : Promise.resolve(true);
+    return pre.then(function(){
+      return attempt().then(function(r){
+        if(r.status === 401 && cloud.refresh){ return supaRefresh().then(function(ok){ return ok ? attempt() : r; }); }
+        return r;
+      });
+    });
   }
   function supaAuth(kind, email, pw){
     var url = kind === 'signup' ? SUPABASE_URL + '/auth/v1/signup' : SUPABASE_URL + '/auth/v1/token?grant_type=password';
@@ -672,7 +703,8 @@
     if(el) el.title = lastCloudError;
     if(!cloudErrorShown){
       cloudErrorShown = true;
-      var hint = status === 404 ? "app_state 테이블이 없는 것 같습니다. 설정 SQL(테이블+RLS)을 실행했는지 확인하세요."
+      var hint = cloud.sessionDead ? "로그인이 만료되었습니다. 로그아웃 후 다시 로그인하면 동기화가 재개됩니다(노트는 로컬에 안전합니다)."
+        : status === 404 ? "app_state 테이블이 없는 것 같습니다. 설정 SQL(테이블+RLS)을 실행했는지 확인하세요."
         : (status === 401 || status === 403) ? "RLS 정책 또는 권한 문제일 수 있습니다. insert/update 정책을 확인하세요."
         : status === 400 ? "테이블 컬럼(user_id uuid PK, data jsonb, updated_at)이 맞는지 확인하세요."
         : "서버에 연결할 수 없습니다. 프로젝트 일시정지 여부나 URL을 확인하세요.";
@@ -680,7 +712,7 @@
     }
   }
   function cloudLoad(){
-    return fetch(SUPABASE_URL + '/rest/v1/app_state?select=data&user_id=eq.' + encodeURIComponent(cloud.userId), { headers:supaHeaders(true) })
+    return supaReq('GET', '/rest/v1/app_state?select=data&user_id=eq.' + encodeURIComponent(cloud.userId), undefined, false)
       .then(function(r){
         if(!r.ok){ return r.text().then(function(t){ cloudError('불러오기', r.status, t); throw new Error('load ' + r.status); }, function(){ cloudError('불러오기', r.status, ''); throw new Error('load ' + r.status); }); }
         return r.json();
@@ -695,14 +727,11 @@
   function cloudPushNow(){ if(cloud.on && cloud.token && cloud.userId){ clearTimeout(cloudTimer); doCloudPush(); } }
   function doCloudPush(){
     if(!cloud.on || !cloud.token || !cloud.userId) return;
-    var h = supaHeaders(true); h['Prefer'] = 'resolution=merge-duplicates,return=minimal';
-    fetch(SUPABASE_URL + '/rest/v1/app_state?on_conflict=user_id', {
-      method:'POST', headers:h,
-      body: JSON.stringify({ user_id:cloud.userId, data:state, updated_at:new Date().toISOString() })
-    }).then(function(r){
-      if(r.ok){ lastCloudStatus = 0; setSync('synced'); }
-      else { r.text().then(function(t){ cloudError('저장', r.status, t); }, function(){ cloudError('저장', r.status, ''); }); setSync('offline'); }
-    }).catch(function(e){ cloudError('저장', 0, String(e && e.message || e)); setSync('offline'); });
+    supaReq('POST', '/rest/v1/app_state?on_conflict=user_id', { user_id:cloud.userId, data:state, updated_at:new Date().toISOString() }, true)
+      .then(function(r){
+        if(r.ok){ lastCloudStatus = 0; setSync('synced'); }
+        else { r.text().then(function(t){ cloudError('저장', r.status, t); }, function(){ cloudError('저장', r.status, ''); }); setSync('offline'); }
+      }).catch(function(e){ cloudError('저장', 0, String(e && e.message || e)); setSync('offline'); });
   }
   function translateAuthError(m){
     m = String(m || '');
